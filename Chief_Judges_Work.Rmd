@@ -1,0 +1,809 @@
+---
+title: "Chief_Judge's_Work"
+author: "Urban Labs"
+date: "January 3, 2018"
+output: html_document
+---
+
+<!---
+The data is at case level with CRCASEN being the unique identifier.
+--->
+
+```{r}
+getwd()
+```
+
+
+```{r}
+library(haven)
+library(plyr)
+library(dplyr)
+library(labelled)
+library(ggplot2)
+library(dict)
+library(lubridate)
+library(reshape)
+library(sqldf)
+library(forcats)
+library(scales)
+library(DescTools)
+```
+
+```{r read}
+# Read SPSS data 
+
+#felonyData <- read_sav("/export/researchdata/courtdata/pretrial_detention/06 02 Final Crim File.sav")
+
+#muniData <- read_sav("/export/researchdata/courtdata/pretrial_detention/06 01 Final Muni File.sav")
+
+#felonyArrest <- read_sav("/export/researchdata/courtdata/pretrial_detention/gunfiles/06 02 Final Crim File Arrest.sav")
+
+#str(gunFelonyData)
+```
+
+
+```{r}
+#saveRDS(felonyData, file="06 02 Final Crime File.rds")
+#saveRDS(felonyArrest, file = "06 02 Final Crime File Arrest.rds")
+
+felonyData <- readRDS("/export/projects/courtdata/CJO Pre-Trial Detention/analysis/KSanalysis/Code/06 02 Final Crime File.rds")
+
+felonyArrest <- readRDS("/export/projects/courtdata/CJO Pre-Trial Detention/analysis/KSanalysis/Code/06 02 Final Crime File Arrest.rds")
+
+```
+
+
+```{r label}
+# Assign labels to columns
+felonyData <- felonyData %>% set_variable_labels(CRCASEN = "Unique case identifier", 
+                                                 CRIRNBR = "IR #", 
+                                                 missIR = "Missing IR# Flag")
+  
+```
+
+
+```{r felonyFilter}
+# Subset data to include only felonies, run attributes(felonyDataSubset$ChargeClass) for labels
+felonyDataSubset <- subset(felonyData, ChargeClass %in% c('1','2','3','4','5','6','7'))
+
+# Factorize charge descriptions
+felonyDataSubset$CLCHGDES <- as.factor(felonyDataSubset$CLCHGDES)
+felonyDataSubset$CLAOIC <- as.factor(felonyDataSubset$CLAOIC)
+str(felonyDataSubset[,1:32])
+```
+
+**The data is for cases disposed in the adult criminal felony court from 2012 through October 2017.**  
+
+```{r NewColumns-Arrest-and-District}
+
+felonyDataSubset <- merge(x = felonyDataSubset, y = felonyArrest[, c("CRCASEN","DISTRICT","CRARRDTE")], by = "CRCASEN", all.x = TRUE)
+#felonyDataSubset <- subset(felonyDataSubset, DISTRICT == 1)
+#felonyDataSubset <- subset(felonyDataSubset, select = c(1:32,747:748,33:746))
+```
+
+
+```{r plotClass}
+# Distribution of cases by class of offense
+pc <- ggplot(felonyDataSubset, aes(factor(CLCHRCLS))) +
+      geom_bar(stat = "count") +
+      xlab("Offense Class") 
+pc      
+```
+
+
+```{r unique}
+sapply(felonyDataSubset[,1:34], function(x) length(unique(x)))
+```
+
+
+
+```{r missing}
+# Missing values in data frame
+missing <- colSums(sapply(felonyDataSubset[,1:34], is.na))
+missing
+```
+
+```{r subsetOutliers}
+# Remove observation with OutCOmeDt == NA 
+felonyDataSubset <- felonyDataSubset[!is.na(felonyDataSubset$OutComeDt),]
+
+felonyDataSubset <- subset(felonyDataSubset, format.Date(CRFRSTDT, "%Y") > 2007)
+```
+
+
+**There are two main primary tasks we're interested in:**
+
+1. First and foremost, our focus in on gun violence in Chicago area. Filter out, all non-gun crimes. 
+2. Find the # of defendants with multiple cases open against them. 
+
+```{r Readtxt}
+gunString <- readLines("gun codes string analysis ks.txt")
+
+```
+
+```{r regex}
+library(stringr)
+
+# Subset text file to include only charge descriptions
+GunChargeDesc <- gunString[12:218]
+
+# Create an empty list to store gun charge descriptions
+gunCodes <- vector("list")
+
+# For Loop to iterate over the file and extract all gun charge descriptions
+# regex metacharacters descriptions: 
+# ^ - start of the string
+# . - matches any single character
+# * - matches at least 0 times
+# ref: http://stat545.com/block022_regular-expression.html
+
+for(i in 1:length(GunChargeDesc)){
+  temp <- gsub("^.*,", "", GunChargeDesc[i])
+  temp <- gsub("[')>0.]","", temp)
+  gunCodes <- append(gunCodes, temp) 
+}
+
+# Subset text file to include only charge sections or statute codes
+GunChargeSec <- gunString[219:292]
+
+# Create an empty list to store gun charge sections
+gunChargeSec <- vector("list")
+
+for(i in 1:length(GunChargeSec)){
+  temp <- gsub("^.*,", "", GunChargeSec[i])
+  temp <- gsub(")>0.","", temp, fixed = TRUE)
+  temp <- gsub("'","", temp)
+  gunChargeSec <- append(gunChargeSec, temp) 
+}
+
+#Write gun charge description to a csv file
+#write.table(gunCodes, file = "gunCodes.csv", col.names = NA, row.names = TRUE, sep = "\t")
+```
+
+
+```{r gunFelonies}
+# Assign a flag for gun cases based on gun charge descriptions in gunCodes list
+felonyDataSubset$GunCase <- as.numeric(toupper(felonyDataSubset$CLCHGDES) %in% gunCodes)  
+                                       #toupper(felonyDataSubset$CLCHGSEC) %in% gunChargeSec)
+
+# Rearrange
+#felonyDataSubset <- subset(felonyDataSubset, select = c(1:34,749,35:748))
+
+# Gun Felonies
+gunFelonyData <- subset(felonyDataSubset, GunCase == 1)
+```
+
+
+Based on the matches from String Analysis file provided, 11,404 cases are gun felonies from our original felony caseload of 88,784 which is ~13% of total cases. 
+
+```{r AOICs}
+# Create a list of all AOIC codes from Gun Felony and match to the broader felony dataset
+gunAOIC <- list()
+gunAOIC <- unique(gunFelonyData$CLAOIC)
+gunAOIC <- gunAOIC[!gunAOIC %in% c("0","9999999")]
+
+felonyDataSubset$GunCase <- as.numeric(toupper(felonyDataSubset$CLCHGDES) %in% unique(gunCodes) |
+                                       felonyDataSubset$CLAOIC %in% unique(gunAOIC))                          
+                                      #toupper(felonyDataSubset$CLCHGSEC) %in% unique(gunChargeSec) | 
+
+# Rearrange
+#felonyDataSubset <- subset(felonyDataSubset, select = c(1:35,749,36:748))
+
+# Gun Felonies
+gunFelonyData <- subset(felonyDataSubset, GunCase == 1)
+```
+
+
+```{r}
+# Calculate whether the defendant is Juvenile or Adult by calculating age at the time of initial case date
+for(i in 1:nrow(gunFelonyData)) {
+  
+  gunFelonyData$Defendant_Age[i] <- round(difftime(gunFelonyData$CRFRSTDT[i], gunFelonyData$CRDOB[i], 
+                                          units = c("days"))/365, digits = 1)
+  
+}
+
+# Subset Juvenile defendants
+gunFelonyData <- subset(gunFelonyData, Defendant_Age > 17)
+```
+
+
+```{r plotAOIC}
+# Gun cases AOIC codes distribution
+pc <- ggplot(gunFelonyData, aes(fct_infreq(factor(CLAOIC)))) +
+      geom_bar(stat = "count") +
+      xlab("Gun Cases : AOIC codes") +
+      theme(axis.text.x = element_text(angle = 90, size = 8, hjust = 1)) 
+pc
+```
+
+12309 - FELON POSS / USE FIREARMS  
+12474 - AGG UUW 
+13855 - ARMED HABITUAL CRIME
+12366 - ARMED ROBBERY/ARMED W FIREARM 
+17785 - AGG UUW/LOADED/NO FCCA 
+
+
+
+The final tally of gun cases identified is 19,895 cases (13% of total cases). The matching was conducted based on Charge descriptions & AOIC codes. 
+
+```{r nonGunChargeDes}
+# Non-Gun Charge descriptions
+nonGunChargeDes <- list()
+nonGunChargeDes <- felonyDataSubset$CLCHGDES[!toupper(felonyDataSubset$CLCHGDES) %in% 
+                                              unique(toupper(gunFelonyData$CLCHGDES))]
+
+write.table(nonGunChargeDes, file = "nonGunChargeDes.csv", col.names = NA, sep = "\t")
+
+```
+
+Dealing with constructed release indicator variable
+
+```{r plotRelease}
+p4 <- ggplot(gunFelonyData, aes(factor(gunFelonyData$Release))) +
+      geom_bar(stat = "count") +
+      scale_x_discrete(breaks=c("0","1","2"), 
+                       labels=c("Detained",
+                                "Released (I-Bond or EM)",
+                                "Released (D-Bond or C-Bond)")) +
+      xlab("Release")
+p4
+```
+
+```{r plotOutCome}
+p4 <- ggplot(gunFelonyData, aes(factor(gunFelonyData$OutComeRed))) +
+      geom_bar(stat = "count") +
+      scale_x_discrete(breaks=c("1","2","3","4"), 
+                       labels=c("Drop",
+                                "Not Guilty",
+                                "Guilty-Pre-Sentence",
+                                "Guilty-Sentence")) +
+      xlab("Case Outcome")
+p4
+```
+
+```{r plotJBP}
+p4 <- ggplot(gunFelonyData, aes(factor(gunFelonyData$JBP))) +
+      geom_bar(stat = "count") +
+      scale_x_discrete(breaks=c("-1","0","1","2","3"), 
+                       labels=c("Unknown",
+                                "Case Dropped",
+                                "Jury Trial",
+                                "Bench Trial",
+                                "Plea of Guilty")) +
+     xlab("JBP")
+p4
+```
+
+### Identifying defendants that had multiple cases open/pending against them:
+
+Below is the outline for the tasks: 
+
+1. In order to uniquely identify each defendant, we will use IR# as id. 
+2. Now, for the part where we need to find defendants that had multiple cases pending against them, we will use CRFRSTDT and OutcomeDT fields. 
+
+
+```{r MissIRpct}
+# Percentage of missing Flag
+pct <- paste(round(nrow(subset(gunFelonyData, missIR == 1)) / nrow(gunFelonyData),3), "%", sep = "")
+pct
+```
+
+Given that a very few # of cases are missing IR#, in this case we might be able to use IR# to uniquely identify defendants. 
+
+```{r Multiple}
+# Filter our cases with non existent or missing IR# 
+gunFelonyDataIR <- subset(gunFelonyData, missIR == 0)
+
+# Duplicate IRs for identifying defendants with multiple open cases
+DuplicateIRs <- gunFelonyDataIR[duplicated(gunFelonyDataIR$CRIRNBR),]
+
+
+# Create a flag to mark cases with duplicate defendants
+gunFelonyData$DuplicateFlag <- as.numeric(gunFelonyData$CRIRNBR %in% 
+                                          unique(DuplicateIRs$CRIRNBR))
+
+#gunFelonyData <- subset(gunFelonyData, select =  c(1:35,749,36:748))
+
+```
+
+
+
+```{r Dict}
+# Iterate over IR # of each defendant with multiple cases open against them
+defendants <- unique(DuplicateIRs$CRIRNBR)
+
+# Create a dict object to store case #, CRFRSTDT and OutCome Date
+mdict <- dict()
+
+for(d in 1:length(defendants)){
+  
+  df <- subset(gunFelonyData[,c("CRCASEN","CRIRNBR","CRFRSTDT","OutComeDt")], 
+               CRIRNBR == as.character(defendants[d]))
+  
+  mdict[[ defendants[d] ]] <- list(CaseNo=df$CRCASEN,
+                                   DocketDate=df$CRFRSTDT,
+                                   OutcomeDate=df$OutComeDt) 
+  
+}
+
+#ConcurrentEdgeCase <- subset(DuplicateIRs, CRIRNBR == "0867962")
+#write.table(ConcurrentEdgeCase, file = "ConcurrentEdgeCase.csv", col.names = NA, sep = "\t")
+
+```
+
+
+```{r Overlap}
+
+# Create a list to store IR#s with overlapping cases
+ Overlap <- list()
+ No_Overlap <- list()
+ OverlapFinal <- list()
+ 
+# For-Loop to identify IR#s with overlapping cases
+for(d in 1:length(defendants)){
+  
+  DocketDates <- mdict$get(defendants[d])$DocketDate
+  OutComeDates <- mdict$get(defendants[d])$OutcomeDate
+  Cases <- mdict$get(defendants[d])$CaseNo
+  
+  
+  if(length(DocketDates)==length(OutComeDates)){
+    
+    for(i in 1:length(DocketDates)){
+      
+      DocketDateInt <- as.Date(DocketDates[i])
+      OutComeDateInt <- as.Date(OutComeDates[i])
+      
+      # Remove the current element from list
+      DocketDates1 <- DocketDates[-i]
+      Cases1 <- Cases[-i]
+      
+      counter = 1
+      len = length(DocketDates1)
+      
+      repeat {
+            
+        for(j in 1:length(DocketDates1)){
+          
+            if(between(ymd(DocketDates1[j]), ymd(DocketDateInt), ymd(OutComeDateInt))){
+              
+               Overlap[[ defendants[d] ]] <- c(Cases[i], Cases1[j])
+               
+            } else {
+              
+               No_Overlap[[ defendants[d] ]] <- c(Cases[i], Cases1[j])
+               
+            }
+                 
+        OverlapFinal[[ defendants[d] ]] <- append(OverlapFinal[[ defendants[d] ]], 
+                                                  Overlap[[ defendants[d] ]]) 
+        
+        counter = counter + 1   
+        
+        }
+        
+        if(counter > len){
+          break
+        }
+        
+      }
+      
+    }   
+  }  
+}
+
+```
+
+Now, that we have a list of defendants (IR#s) that have multiple cases pending, we need to determine those defendants that were released or detained pre-trial in any or all of the cases against them. 
+
+```{r Overlap1}
+# Construct a pre-trial detained or release indicator based on the concurrent cases pending
+# Create a look up table with IR#s with concurrent pending cases and pre-trial release and detained flag
+
+# For loop to create a list of all overlapping cases
+overlapping_cases <- list()
+
+for(c in 1:length(OverlapFinal)){
+  
+  temp <- OverlapFinal[[c]]
+  overlapping_cases <- append(overlapping_cases, temp)
+  
+}
+  
+gunFelonyData$Overlap <- as.numeric(gunFelonyData$CRCASEN %in% overlapping_cases)
+
+gunFelonyData$Overlap <- as.factor(gunFelonyData$Overlap)
+#gunFelonyData <- subset(gunFelonyData, select =  c(1:36,750,37:749))
+
+```
+
+
+
+```{r ConcConf}
+# Subset the dataframe to include identified concurrent cases
+gunFelonyData_Conc <- subset(gunFelonyData, Overlap == 1)
+defendants_concurrent <- unique(gunFelonyData_Conc$CRIRNBR)
+
+defConcRel <- dict()
+DefendantsConcurrentDetained <- list()
+DefendantsConcurrentReleased <- list()
+
+# For-Loop to create a list of identify defendants with conflicting release indicators 
+for(d in 1:length(defendants_concurrent)){
+  
+  gunFelonyData_dc <- subset(gunFelonyData_Conc, CRIRNBR == defendants_concurrent[d])
+  
+  defConcRel[[ defendants_concurrent[d] ]] <- list(ReleaseIndicator = gunFelonyData_dc$Release)
+  
+  for(r in 1:length(defConcRel$get(defendants_concurrent[d])$ReleaseIndicator)){
+    
+    if(defConcRel$get(defendants_concurrent[d])$ReleaseIndicator[r] == 0){
+      
+      temp <- defendants_concurrent[d]
+      DefendantsConcurrentDetained <- append(DefendantsConcurrentDetained, temp)
+      
+    } else if(defConcRel$get(defendants_concurrent[d])$ReleaseIndicator[r] == 1) {
+      
+      temp1 <- defendants_concurrent[d]
+      DefendantsConcurrentReleased <- append(DefendantsConcurrentReleased, temp1)
+      
+    }
+    
+  }
+  
+}
+
+# List of IR#s with concurrent cases and conflicting release indicators 
+DefendantsConcurrentConflicting <- Reduce(intersect, list(DefendantsConcurrentDetained, DefendantsConcurrentReleased))
+
+# An example of conflicting release indicator 0,1 -> 1449149 categorized as detained.
+for(i in 1:nrow(gunFelonyData_Conc)){
+
+  if(gunFelonyData_Conc$CRIRNBR[i] %in% DefendantsConcurrentDetained) {
+
+    gunFelonyData_Conc$Release[i] <- 0
+
+  }
+}
+
+# 1449149 categorized as detained for all concurrent cases. 
+
+```
+
+
+```{r}
+# Number of defendants with concurrent cases
+length(unique(gunFelonyData_Conc$CRIRNBR))
+```
+
+```{r}
+# Number of concurrent cases 
+length(unique(gunFelonyData_Conc$CRCASEN))
+```
+
+```{r}
+# Number of defendants with concurrent cases and conflicting release indicators
+length(unique(DefendantsConcurrentConflicting))
+```
+
+
+
+1156 defendants had a total of 2,948 concurrent cases pending against them. In case of a conflict in their release indicator (detained or released), we've updated their records for detained to take precedence over released. There are 301 defendants with concurrent pending cases who also had conflicting release indicators.
+
+```{r updateConcConfRelease}
+# Update case-level records for concurrent cases with conflicting release indicator
+gunFelonyConcConf <- gunFelonyData_Conc[gunFelonyData_Conc$CRIRNBR %in% DefendantsConcurrentConflicting,]
+
+for(c in 1:length(gunFelonyData$CRCASEN)){
+  
+  if(gunFelonyData$CRCASEN[c] %in% gunFelonyConcConf$CRCASEN) {
+    gunFelonyData$Release[c] <- 0
+  }
+  
+}
+
+```
+
+
+```{r CalcDentionLength}
+# Calculate the length of detention 
+# Difference between Outcome / Sentence date and Arrest date for those detained. 
+# Difference between First Release date and Arrest date for those detained and released on (I-Bond and EM)
+
+# Detained - Release indicator = 0 
+gunFelonyDataR0 <- subset(gunFelonyData, Release == 0)
+
+# Detained - Release indicator = 1
+gunFelonyDataR1 <- subset(gunFelonyData, Release == 1)
+
+for(c in 1:length(gunFelonyData$CRCASEN)){
+  
+  if(gunFelonyData$CRCASEN[c] %in% gunFelonyDataR0$CRCASEN){
+    
+    gunFelonyData$Detention_Length[c] <- difftime(gunFelonyData$OutComeDt[c], gunFelonyData$CRARRDTE[c], 
+                                                  units = c("days"))
+    
+  } else if(gunFelonyData$CRCASEN[c] %in% gunFelonyDataR1$CRCASEN){
+    
+    gunFelonyData$Detention_Length[c] <- difftime(gunFelonyData$FirstRelDate[c], gunFelonyData$CRARRDTE[c],
+                                                  units = c("days"))
+    
+  }
+  
+}
+
+```
+
+
+```{r Sentences}
+# Sum total IDOC and CCDOC length
+gunFelonyData$CCDOC_Sent2 <- as.integer(gunFelonyData$CCDOC_Sent)
+gunFelonyData$CCDOC_Sent2[is.na(gunFelonyData$CCDOC_Sent2)] <- 0
+
+gunFelonyData$IDOC_Sent <- as.integer(gunFelonyData$IDOC_Sent)
+gunFelonyData$IDOC_Sent[is.na(gunFelonyData$IDOC_Sent)] <- 0
+
+gunFelonyData$Corrections_Total <- as.integer(gunFelonyData$IDOC_Sent + gunFelonyData$CCDOC_Sent2)
+gunFelonyData$Corrections_Total[is.na(gunFelonyData$Corrections_Total)] <- 0
+
+gunFelonyData$SentCompletionDate <- AddMonths(as.Date(gunFelonyData$OutComeDt), gunFelonyData$Corrections_Total)
+
+pSent <- ggplot(gunFelonyData, aes(x=SentCompletionDate)) +
+         geom_histogram(binwidth = 20) + 
+         #geom_vline(xintercept = quantile, size = 2) +
+         scale_x_date(breaks = date_breaks("2 years"),
+                      labels=date_format("%b-%y")) +
+         xlab("Sentence Completion Dates") + 
+         theme(axis.text.x = element_text(angle = 85, size = 8, hjust = 1)) 
+pSent
+
+```
+Based on the computed sentence completion dates, it appears that the high concentration of cases had the date between 2014 and 2019. 
+
+```{r}
+# Rearrange gun felony data
+gunFelonyData <- subset(gunFelonyData, select = c(1:37,747:755,38:746))
+```
+
+
+### Merge CPD data for re-arrest target variable
+
+
+```{r Import}
+#Change Working Directory
+# setwd("/export/projects/courtdata/CJO Pre-Trial Detention/data_raw/CPD_Arrests/")
+# 
+# 
+# # Read Crime data
+# ImportCSV <- function(files) {
+# 
+#   # Create a null dataframe
+#   myData <- data.frame(NULL)
+# 
+#   # Loop through each files in the list
+#   for (i in 1:length(files)) {
+#     cur.file <- read.csv(file = files[i], sep = ",", stringsAsFactors = FALSE)
+#     print(files[i])
+#     # Append data from current file to dataframe
+#     myData <- rbind(myData, cur.file)
+#   }
+# 
+#   return(myData)
+# 
+# }
+# 
+# # Grab all the csv files in the folder
+# files <- list.files(path = "/export/projects/courtdata/CJO Pre-Trial Detention/data_raw/CPD_Arrests/",
+#                     pattern = "*.csv")
+# 
+# CPDArrestsData <- ImportCSV(files)
+
+```
+
+
+```{r}
+getwd()
+```
+
+
+```{r cpdData}
+#saveRDS(CPDArrestsData, file = "CPDArrestsData.rds")
+
+CPDArrestsData <- readRDS("/export/projects/courtdata/CJO Pre-Trial Detention/analysis/KSanalysis/Code/CPDArrestsData.rds")
+
+# Factorize IR_NO column
+CPDArrestsData$IR_NO <- as.factor(CPDArrestsData$IR_NO)
+CPDArrestsData$CB_NO <- as.factor(CPDArrestsData$CB_NO)
+CPDArrestsData$ARREST_DATE1 <- as.Date(CPDArrestsData$ARREST_DATE, format = "%d-%b-%y")
+
+```
+
+
+```{r mergeCPD-ExactAndProbabilisticMatch}
+# Truncate leading zeros for match with CPD Arrest data
+gunFelonyData$CRCBNBR <- sub("^[0]+","",gunFelonyData$CRCBNBR)
+
+# Matches based on Case #
+gunFelonyCourtArrests_M1 <- merge(x = gunFelonyData, y = CPDArrestsData, by.x = "CRCBNBR", by.y = "CB_NO")
+
+# Subset non-matches rows 
+gunFelonyDataNM <- subset(gunFelonyData, 
+                          !(gunFelonyData$CRCASEN %in% gunFelonyCourtArrests_M1$CRCASEN))
+
+# Further match on IR# and Arrest date 
+gunFelonyCourtArrests_M2 <- merge(x = gunFelonyDataNM, y = CPDArrestsData, by.x = c("CRIRNBR","CRARRDTE"), by.y = c("IR_NO","ARREST_DATE1"))
+
+# Drop columns IR_NO and ARR_DT
+vars <- names(gunFelonyCourtArrests_M1) %in% c("IR_NO", "ARREST_DATE1")
+gunFelonyCourtArrests_M1 <- gunFelonyCourtArrests_M1[!vars]
+
+# Drop column CB_NO
+vars <- names(gunFelonyCourtArrests_M2) %in% "CB_NO"
+gunFelonyCourtArrests_M2 <- gunFelonyCourtArrests_M2[!vars]
+
+# Append 
+gunFelonyCourtArrests <- rbind(gunFelonyCourtArrests_M1, gunFelonyCourtArrests_M2)
+
+gunFelonyCourtArrests <- subset(gunFelonyCourtArrests, select = c(1:55,756:872,56:755))
+  
+# Subset non-matches rows 
+gunFelonyDataNM1 <- subset(gunFelonyData, 
+                          !(gunFelonyData$CRCASEN %in% gunFelonyCourtArrests$CRCASEN))
+
+```
+
+```{r}
+# Check if all IR#s in non matches belong to CPD Arrest data 
+gunFelonyDataIRNM1 <- unique(gunFelonyDataNM1$CRIRNBR)
+CPDArrestsDataIR <- unique(CPDArrestsData$IR_NO)
+
+gunFelonyDataIRNM1CPDArrest <- list()
+gunFelonyDataIRNM1NoCPDArrest <- list()
+
+for(i in 1:length(gunFelonyDataIRNM1)) {
+  
+  if(gunFelonyDataIRNM1[i] %in% CPDArrestsDataIR) {
+    
+    temp <- gunFelonyDataIRNM1[i]
+    gunFelonyDataIRNM1CPDArrest <- append(gunFelonyDataIRNM1CPDArrest, temp)
+    
+    
+  } else {
+    
+    temp1 <- gunFelonyDataIRNM1[i]
+    gunFelonyDataIRNM1NoCPDArrest <- append(gunFelonyDataIRNM1NoCPDArrest, temp1)
+    
+  }
+  
+}  
+  
+```
+
+### Construct Arrest histories and our target / outcome variable - Arrests post adjudication 
+
+```{r ConstructArrestHistory}
+# Iterate over IR # of each defendant with multiple cases open against them
+defendants1 <- unique(gunFelonyCourtArrests$CRIRNBR) 
+
+# Create a dict object to store Arrest dates and charge characteristics 
+mdictArrest <- dict()
+
+for(d in 1:length(defendants1)) {
+  
+  df <- subset(CPDArrestsData[,c("ARREST_DATE1",
+                                 "IR_NO",
+                                 "STAT_DESCR",
+                                 "CHARGE_CLASS_CD",
+                                 "CHARGE_TYPE_CD",
+                                 "IUCR_CODE_CD")], 
+               IR_NO == as.character(defendants1[d]))
+  
+  print(paste0("Defendants", defendants1[d]))
+  
+  mdictArrest[[ defendants1[d] ]] <- list(ArrestDate = df$ARREST_DATE1,
+                                          Stat_Descr = df$STAT_DESCR,
+                                          ChargeClass = df$CHARGE_CLASS_CD,
+                                          ChargeType = df$CHARGE_TYPE_CD,
+                                          IUCR_Code = df$IUCR_CODE_CD) 
+  
+}
+
+# Create a dict object to store case #, initial court date and outcome date
+mdictCourt <- dict()
+
+for(d in 1:length(defendants1)) {
+  
+  df <- subset(gunFelonyData[,c("CRCASEN",
+                                 "CRIRNBR",
+                                 "CRFRSTDT",
+                                 "OutComeDt")],
+               CRIRNBR == as.character(defendants1[d]))
+  
+  mdictCourt[[ defendants1[d] ]] <- list(CaseNo = df$CRCASEN,
+                                         IR_NO = df$CRIRNBR,
+                                         CaseDocketDate = df$CRFRSTDT,
+                                         CaseOutComeDate = df$OutComeDt)
+  
+}
+
+```
+
+```{r ConstructArrestHistory1}
+# 1152515 - Multiple cases 
+# List to store arrest history dates 
+
+ArrestHistory <- numvecdict()
+ReOffense <- numvecdict()
+MidDates <- numvecdict()
+ArrestDates <- list()
+
+for(d in 1:length(defendants1)) { 
+  
+  #print(defendants1[d])
+  
+  if(length(mdictArrest$get(defendants1[d])$ArrestDate) > 0) {
+    
+    for(d1 in 1:length(mdictCourt$get(defendants1[d])$CaseDocketDate)) {
+      
+      #print(paste0("Court Loop", mdictCourt$get(defendants1[d])$CaseDocketDate[d1]))
+        
+        for(a in 1:length(mdictArrest$get(defendants1[d])$ArrestDate)) {
+        
+          #print(paste0("Arrest Loop", mdictArrest$get(defendants1[d])$ArrestDate[a]))
+          
+          ArrestDateInt <- as.Date(mdictArrest$get(defendants1[d])$ArrestDate[a])
+          OutComeDateInt <- as.Date(mdictCourt$get(defendants1[d])$CaseOutComeDate[d1])
+          DocketDateInt <- as.Date(mdictCourt$get(defendants1[d])$CaseDocketDate[d1])
+          
+          # Mid dates
+          if(between(ymd(ArrestDateInt), ymd(DocketDateInt), ymd(OutComeDateInt))) {
+            
+               #print(paste0("Mid Arrest block", mdictArrest$get(defendants1[d])$ArrestDate[a]))
+            
+               MidDates$append_number(defendants1[d],  
+                                      as.Date(mdictArrest$get(defendants1[d])$ArrestDate[a]))   
+            
+          }
+          
+          # Check if Arrest date is prior to court date - (Arrest History)
+          else if(mdictArrest$get(defendants1[d])$ArrestDate[a] < 
+             mdictCourt$get(defendants1[d])$CaseDocketDate[d1]) {
+                
+               #print(paste0("Arrest History block", mdictArrest$get(defendants1[d])$ArrestDate[a]))
+               
+               #ArrestHistory[[ mdictCourt$get(defendants1[d])$CaseNo[d1] ]] <-   
+               #            as.Date(mdictArrest$get(defendants1[d])$ArrestDate[a])
+               
+               ArrestHistory$append_number(mdictCourt$get(defendants1[d])$CaseNo[d1],
+                                           as.Date(mdictArrest$get(defendants1[d])$ArrestDate[a]))
+        
+          } 
+                 
+          # Check if Arrest date is post court date - (ReOffense)  
+          else if(mdictArrest$get(defendants1[d])$ArrestDate[a] > 
+                  mdictCourt$get(defendants1[d])$CaseOutComeDate[d1]) {
+                  # --> Use Sentence Completion date for guilty vs not guilty 
+            
+                  #print(paste0("ReOffense block", mdictArrest$get(defendants1[d])$ArrestDate[a]))
+         
+                  #ReOffense[[ mdictCourt$get(defendants1[d])$CaseNo[d1] ]] <-            
+                  #          as.Date(mdictArrest$get(defendants1[d])$ArrestDate[a])
+               
+                  ReOffense$append_number(mdictCourt$get(defendants1[d])$CaseNo[d1],
+                                          as.Date(mdictArrest$get(defendants1[d])$ArrestDate[a]))
+         
+          }
+      
+        }
+      }  
+  }
+}
+  
+  
+```
+
+
+
+
+
