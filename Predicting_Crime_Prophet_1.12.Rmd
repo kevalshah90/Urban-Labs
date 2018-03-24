@@ -1,0 +1,268 @@
+---
+title: "Predicting_Crime_Prophet"
+author: "Urban Labs"
+date: "December 13, 2017"
+output: html_document
+notes: "1/12: Specifying seasonality and holiday effects, outliers, 
+              parameter tuning with cross validation and running the model 
+              for only high crimes neighborhoods 15,11,10,9,7,6,5,4,3,2,1"
+---
+
+```{r directory}
+getwd()
+```
+
+```{r library, message=FALSE}
+library(prophet)
+library(lubridate)
+library(weatherData)
+library(xts)
+library(zoo)
+library(ggplot2)
+library(data.table)
+library(reshape2)
+library(anytime)
+library(ggrepel)
+library(scales)
+library(dplyr)
+library(plyr)
+```
+
+
+
+```{r read}
+# Read Felonies Crime Data
+#CrimeDataFelonies <- read.csv(file = "crimeDataFelonies.csv", header = TRUE, sep = ",")
+```
+
+```{r readRDS}
+# RDS 
+#saveRDS(CrimeDataFelonies, "/export/home/keval/Crime Predictions using Prophet/CrimeDataFelonies.rds")
+CrimeDataFelonies <- readRDS("/export/home/keval/Crime Predictions using Prophet/CrimeDataFelonies.rds")
+```
+
+```{r plot1}
+# Let's do some exploratory analysis
+c <- ggplot(CrimeDataFelonies, aes(factor(INBOX))) + geom_bar(stat = "count") + xlab("Crime")
+c + theme(axis.text.x = element_text(angle = 90))
+```
+
+
+```{r plot2}
+# Exploring Property Crimes 
+CrimeDataProperty = subset(CrimeDataFelonies, INBOX == "PROPERTY CRIMES")
+ggplot(CrimeDataProperty, aes(factor(PRIMARY))) + geom_bar(stat = "count") + xlab("Property")
+
+```
+
+
+```{r plot3}
+CrimeDataViolence = subset(CrimeDataFelonies, INBOX == "VIOLENT CRIMES")
+
+v <- ggplot(CrimeDataViolence, aes(factor(PRIMARY))) + geom_bar(stat = "count") + xlab("Violent")
+v + theme(axis.text.x = element_text(angle = 90))
+```
+
+
+
+```{r plot4}
+d <- ggplot(CrimeDataFelonies, aes(x=factor(DISTRICT), fill = INBOX)) +
+     xlab("DISTRICT") +
+     geom_bar(stat = "count") +
+     ggtitle("Crime Categories by Districts")
+d
+```
+
+
+```{r plot5}
+library(scales)
+y <- ggplot(CrimeDataFelonies, aes(x=factor(YEAR), fill = INBOX)) +
+     xlab("YEAR") +
+     geom_bar(stat = "count", position = "fill") +
+     scale_y_continuous(labels = percent_format())
+     ggtitle("Crime Categories by Year")
+y
+```
+
+```{r summary}
+# Summarize Property crime data
+table(CrimeDataProperty$YEAR)
+```
+
+
+
+
+```{r plot6}
+# Plot time series data of total property crimes
+pc <- ggplot(CrimeDataProperty, aes(YEAR)) + 
+      geom_line(stat = "count") + 
+      xlab("Burglaries and Thefts") + 
+      ggtitle("Property Crimes") +
+      ylim(50000,150000)
+pc
+```
+
+
+```{r aggregate}
+# Aggregate our data for weekly predictions and select a subset of columns for predictors into the model 
+# Group data by date, Inbox, Primary and create a calculated column for count of # of crimes
+CrimeDataPropAgg <- aggregate(X ~ DATEOCC + DISTRICT, data = CrimeDataProperty, length)
+
+# Rename Column 
+names(CrimeDataPropAgg)[1] <- "Date"
+names(CrimeDataPropAgg)[3] <- "CrimeCount"
+
+# Convert DATEOCC column to datetime object
+CrimeDataPropAgg$Date <- as.Date(CrimeDataPropAgg$Date, format = '%d-%b-%y')
+#CrimeDataPropAgg <- subset(CrimeDataPropAgg, select = c(Date, DISTRICT, X))
+```
+
+
+
+```{r plot7}
+# Plot time series data of total property crimes in dataset
+pc <- ggplot(CrimeDataPropAgg, aes(x=Date, y = CrimeCount)) + 
+      geom_line() +
+      scale_x_date(labels=date_format("%m/%y")) +
+      xlab("Burglaries and Thefts") + 
+      ylab("Crime Count") +
+      ggtitle("Daily Property Crimes")
+pc
+```
+
+```{r aggregate1}
+# Aggregate daily data to weekly summary 
+CrimeDataPropAgg$Week <- as.Date(cut(CrimeDataPropAgg$Date, breaks = "week", start.on.monday = FALSE))
+
+# Summarize the data by week
+CrimeDataPropGrouped <- group_by(CrimeDataPropAgg, Week, DISTRICT)
+CrimeDataPropWeek <- aggregate(CrimeCount ~ Week + DISTRICT, data = CrimeDataPropGrouped, sum)
+```
+
+
+
+```{r plot8}
+# Bar plots to analyze the spread of crimes in each district and outlier detection
+wpc <- ggplot(CrimeDataPropWeek, aes(factor(DISTRICT), CrimeCount, color = factor(DISTRICT))) + 
+       geom_boxplot() +
+       xlab("Districts") +
+       ylab("Crime Count") +
+       labs(color="District")
+wpc
+
+```
+
+
+```{r plot9}
+# Plot weekly property crimes
+pcw <- ggplot(CrimeDataPropWeek, aes(x=Week, y=CrimeCount, color=factor(DISTRICT))) + 
+      geom_line() + 
+      scale_x_date(labels=date_format("%m/%y")) + 
+      labs(color="District") +
+      xlab("Crimes") + 
+      ggtitle("Weekly Property Crimes") +
+      scale_x_date(breaks = date_breaks("6 months"), labels = date_format("%b-%y")) +
+      theme(axis.text.x = element_text(angle = 90))
+      #  geom_text_repel(
+      #  data = CrimeDataPropWeek,
+      #  aes(label = paste("District", DISTRICT)),
+      #  size = 3,
+      #  nudge_x = 45
+      #)
+pcw
+```
+
+```{r prophet}
+# Subset data
+CrimeDataPropWeekProphet <- subset(CrimeDataPropWeek, select = c(Week, DISTRICT, CrimeCount))
+
+# Data table
+# CrimeDataPropWeekProphetDT <- as.data.table(CrimeDataPropWeekProphet)
+
+# Model
+modelGroupDist <- function(x, dist) {
+  
+  cdpModel <- prophet(x, changepoint.prior.scale = 0.5, weekly.seasonality = TRUE)
+  
+  cdpFuture <- make_future_dataframe(cdpModel, periods = 52, freq = "week", include_history = TRUE)
+  
+  forecast <- predict(cdpModel, cdpFuture)
+  
+  return(list(m=cdpModel, forecast=forecast, district=dist))
+  
+}
+
+districts <- unique(CrimeDataPropWeekProphet$DISTRICT)
+# Subset districts to high crime
+hc_districts = c('15','11','10','9','7','6','5','4','3','2','1')
+
+
+# Write code to iterate over each districts and pass crime counts and date fields only to the function and fit prophet model. 
+
+#Initialize result list to store model results
+results <- vector("list", 11)
+
+for (i in 1:length(hc_districts)) {
+  
+  cdSubset <- subset(CrimeDataPropWeekProphet, DISTRICT == hc_districts[i])
+  
+  names(cdSubset)[1] <- "ds"
+  
+  names(cdSubset)[3] <- "y"
+  
+  cdSubset <- subset(cdSubset, select = c("ds","y"))
+  
+  # Store results of the model in 
+  results[[i]] <- modelGroupDist(cdSubset, hc_districts[i])
+  
+}
+
+```
+
+```{r plot10}
+# 52-week forecast
+plot(results[[1]]$m, results[[1]]$forecast, xlabel = "Date", ylabel = "Crime Count")
+```
+
+```{r}
+# Prophet component plots
+prophet_plot_components(results[[1]]$m, results[[1]]$forecast)
+```
+
+
+
+```{r cv}
+# Cross Validation using prophets in built CV method
+# Calculate the average cross validation error for each district 
+
+cd.cv <- cross_validation(results[[1]]$m, initial = 312, period = 52, horizon = 52, units = "weeks")
+tail(cd.cv)
+```
+
+```{r errorMAE}
+# Calculate MAE
+error.MAE <- mean(abs(cd.cv$yhat - cd.cv$y))
+error.MAE
+```
+
+```{r errorRMSE}
+# Calculate RMSE
+error.RMSE <- sqrt(mean((cd.cv$yhat - cd.cv$y)^2))
+error.RMSE
+```
+
+
+```{r plot13}
+cvp <- ggplot(cd.cv, aes(ds)) +
+  geom_ribbon(aes(ymin=yhat_lower,ymax=yhat_upper), fill = "lightsteelblue2") +
+  geom_line(aes(y = y, color = "Actual")) +
+  geom_line(aes(y = yhat, color = "Predicted")) +
+  xlab("Date") +
+  ylab("Crime") +
+  ggtitle("Actual vs Predicted")
+cvp
+
+```
+
+
+
