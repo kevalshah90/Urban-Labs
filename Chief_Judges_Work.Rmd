@@ -1,12 +1,24 @@
 ---
-title: "Chief_Judge's_Work"
+title: "Chief_Judges_Work"
 author: "Urban Labs"
-date: "January 3, 2018"
+date: "February 26th, 2018"
 output: html_document
 ---
 
 <!---
-The data is at case level with CRCASEN being the unique identifier.
+The data are at case level with CRCASEN being the unique identifier.
+
+03/14 Add plots with incarceration in colors 
+03/15 Plot of pretrial length and sentence length, grouped / color by defendants released or detained. 
+03/19 For the second analysis check mid dates for offense pre-trial
+03/19 Test including/Excluding concurrent cases  
+
+03/23 Arrest History information:  
+Count of Prior Arrests -   
+Violent gun charge- Primary contains Weapons Secondary contains hand gun, firearms
+Non Violent Arrests - 
+Gun Charges NV- Primary contains Weapons Seconday contains UUW
+Non gun Charges - 
 --->
 
 ```{r}
@@ -14,10 +26,10 @@ getwd()
 ```
 
 
-```{r}
+```{r load-Libraries}
 library(haven)
-library(plyr)
 library(dplyr)
+library(plyr)
 library(labelled)
 library(ggplot2)
 library(dict)
@@ -27,6 +39,22 @@ library(sqldf)
 library(forcats)
 library(scales)
 library(DescTools)
+library(glmmML)
+library(fitdistrplus)
+library(wesanderson)
+library(stargazer)
+library(plm)
+library(arm)
+library(dotwhisker)
+library(car)
+library(descr)
+library(gmodels)
+library(olsrr)
+library(zoo)
+library(effects)
+library(sjPlot)
+library(texreg)
+library(xtable)
 ```
 
 ```{r read}
@@ -55,7 +83,7 @@ felonyArrest <- readRDS("/export/projects/courtdata/CJO Pre-Trial Detention/anal
 
 ```{r label}
 # Assign labels to columns
-felonyData <- felonyData %>% set_variable_labels(CRCASEN = "Unique case identifier", 
+felonyData <- felonyData %>% set_variable_labels(CRCASEN = "Unique Case Identifier", 
                                                  CRIRNBR = "IR #", 
                                                  missIR = "Missing IR# Flag")
   
@@ -70,6 +98,7 @@ felonyDataSubset <- subset(felonyData, ChargeClass %in% c('1','2','3','4','5','6
 felonyDataSubset$CLCHGDES <- as.factor(felonyDataSubset$CLCHGDES)
 felonyDataSubset$CLAOIC <- as.factor(felonyDataSubset$CLAOIC)
 str(felonyDataSubset[,1:32])
+
 ```
 
 **The data is for cases disposed in the adult criminal felony court from 2012 through October 2017.**  
@@ -103,6 +132,8 @@ missing <- colSums(sapply(felonyDataSubset[,1:34], is.na))
 missing
 ```
 
+
+
 ```{r subsetOutliers}
 # Remove observation with OutCOmeDt == NA 
 felonyDataSubset <- felonyDataSubset[!is.na(felonyDataSubset$OutComeDt),]
@@ -110,6 +141,12 @@ felonyDataSubset <- felonyDataSubset[!is.na(felonyDataSubset$OutComeDt),]
 felonyDataSubset <- subset(felonyDataSubset, format.Date(CRFRSTDT, "%Y") > 2007)
 ```
 
+```{r felonyCasesUniverse}
+# felony cases by year
+felonyCasesYear <- as.data.frame(count(felonyDataSubset, year(OutComeDt)))
+felonyCasesYear
+
+```
 
 **There are two main primary tasks we're interested in:**
 
@@ -173,7 +210,6 @@ felonyDataSubset$GunCase <- as.numeric(toupper(felonyDataSubset$CLCHGDES) %in% g
 gunFelonyData <- subset(felonyDataSubset, GunCase == 1)
 ```
 
-
 Based on the matches from String Analysis file provided, 11,404 cases are gun felonies from our original felony caseload of 88,784 which is ~13% of total cases. 
 
 ```{r AOICs}
@@ -186,7 +222,7 @@ felonyDataSubset$GunCase <- as.numeric(toupper(felonyDataSubset$CLCHGDES) %in% u
                                        felonyDataSubset$CLAOIC %in% unique(gunAOIC))                          
                                       #toupper(felonyDataSubset$CLCHGSEC) %in% unique(gunChargeSec) | 
 
-# Rearrange
+# Rearrange 
 #felonyDataSubset <- subset(felonyDataSubset, select = c(1:35,749,36:748))
 
 # Gun Felonies
@@ -194,17 +230,29 @@ gunFelonyData <- subset(felonyDataSubset, GunCase == 1)
 ```
 
 
-```{r}
-# Calculate whether the defendant is Juvenile or Adult by calculating age at the time of initial case date
-for(i in 1:nrow(gunFelonyData)) {
-  
-  gunFelonyData$Defendant_Age[i] <- round(difftime(gunFelonyData$CRFRSTDT[i], gunFelonyData$CRDOB[i], 
-                                          units = c("days"))/365, digits = 1)
-  
-}
+```{r gunCasesUniverse}
+# gun felony cases by year
+gunCasesYear <- as.data.frame(count(gunFelonyData, year(OutComeDt)))
+gunCasesYear
+#stargazer(gunCasesYear)
 
-# Subset Juvenile defendants
-gunFelonyData <- subset(gunFelonyData, Defendant_Age > 17)
+```
+
+
+
+
+
+
+```{r ageBoxplot}
+
+#ageBox <- ggplot(gunFelonyData, aes(x= "", y= Defendant_Age)) +
+#          geom_boxplot() +
+#          xlab("Age") +
+#          ylab("Distribution of Defendant Age") +
+#          ylim(0,75) +
+          
+#ageBox
+
 ```
 
 
@@ -223,9 +271,7 @@ pc
 12366 - ARMED ROBBERY/ARMED W FIREARM 
 17785 - AGG UUW/LOADED/NO FCCA 
 
-
-
-The final tally of gun cases identified is 19,895 cases (13% of total cases). The matching was conducted based on Charge descriptions & AOIC codes. 
+The final tally of gun cases identified is 19,501 cases (13% of total cases). The identification was conducted based on Charge descriptions & AOIC codes. 
 
 ```{r nonGunChargeDes}
 # Non-Gun Charge descriptions
@@ -240,6 +286,7 @@ write.table(nonGunChargeDes, file = "nonGunChargeDes.csv", col.names = NA, sep =
 Dealing with constructed release indicator variable
 
 ```{r plotRelease}
+
 p4 <- ggplot(gunFelonyData, aes(factor(gunFelonyData$Release))) +
       geom_bar(stat = "count") +
       scale_x_discrete(breaks=c("0","1","2"), 
@@ -248,9 +295,11 @@ p4 <- ggplot(gunFelonyData, aes(factor(gunFelonyData$Release))) +
                                 "Released (D-Bond or C-Bond)")) +
       xlab("Release")
 p4
+
 ```
 
 ```{r plotOutCome}
+
 p4 <- ggplot(gunFelonyData, aes(factor(gunFelonyData$OutComeRed))) +
       geom_bar(stat = "count") +
       scale_x_discrete(breaks=c("1","2","3","4"), 
@@ -260,9 +309,12 @@ p4 <- ggplot(gunFelonyData, aes(factor(gunFelonyData$OutComeRed))) +
                                 "Guilty-Sentence")) +
       xlab("Case Outcome")
 p4
+
 ```
 
+
 ```{r plotJBP}
+
 p4 <- ggplot(gunFelonyData, aes(factor(gunFelonyData$JBP))) +
       geom_bar(stat = "count") +
       scale_x_discrete(breaks=c("-1","0","1","2","3"), 
@@ -273,7 +325,25 @@ p4 <- ggplot(gunFelonyData, aes(factor(gunFelonyData$JBP))) +
                                 "Plea of Guilty")) +
      xlab("JBP")
 p4
+
 ```
+
+
+```{r plotJBP1}
+
+p4 <- ggplot(gunFelonyData, aes(factor(year(gunFelonyData$CRFRSTDT)), fill = factor(gunFelonyData$JBP))) +
+      geom_bar(stat = "count", position = "fill") +
+      xlab("Case Initiation Year") +
+      ylab("Percent") +
+      ggtitle("Percentage Distribution of Case Adjudication Type by Year") + 
+      scale_y_continuous(labels = percent_format()) +
+      scale_fill_discrete(name = "Type",
+                          breaks = c("-1","0","1","2","3"),
+                          labels = c("Unknown","Case Dropped","Jury Trial","Bench Trial","Plea of Guilty"))
+p4
+
+```
+
 
 ### Identifying defendants that had multiple cases open/pending against them:
 
@@ -306,7 +376,6 @@ gunFelonyData$DuplicateFlag <- as.numeric(gunFelonyData$CRIRNBR %in%
 #gunFelonyData <- subset(gunFelonyData, select =  c(1:35,749,36:748))
 
 ```
-
 
 
 ```{r Dict}
@@ -366,7 +435,7 @@ for(d in 1:length(defendants)){
             
         for(j in 1:length(DocketDates1)){
           
-            if(between(ymd(DocketDates1[j]), ymd(DocketDateInt), ymd(OutComeDateInt))){
+            if(dplyr::between(ymd(DocketDates1[j]), ymd(DocketDateInt), ymd(OutComeDateInt))){
               
                Overlap[[ defendants[d] ]] <- c(Cases[i], Cases1[j])
                
@@ -419,7 +488,6 @@ gunFelonyData$Overlap <- as.factor(gunFelonyData$Overlap)
 ```
 
 
-
 ```{r ConcConf}
 # Subset the dataframe to include identified concurrent cases
 gunFelonyData_Conc <- subset(gunFelonyData, Overlap == 1)
@@ -429,7 +497,7 @@ defConcRel <- dict()
 DefendantsConcurrentDetained <- list()
 DefendantsConcurrentReleased <- list()
 
-# For-Loop to create a list of identify defendants with conflicting release indicators 
+# For-Loop to create a list to identify defendants with conflicting release indicators 
 for(d in 1:length(defendants_concurrent)){
   
   gunFelonyData_dc <- subset(gunFelonyData_Conc, CRIRNBR == defendants_concurrent[d])
@@ -472,24 +540,22 @@ for(i in 1:nrow(gunFelonyData_Conc)){
 ```
 
 
-```{r}
+```{r concCasesDefendants}
 # Number of defendants with concurrent cases
 length(unique(gunFelonyData_Conc$CRIRNBR))
 ```
 
-```{r}
+```{r concCases#}
 # Number of concurrent cases 
 length(unique(gunFelonyData_Conc$CRCASEN))
 ```
 
-```{r}
+```{r concConfReleases}
 # Number of defendants with concurrent cases and conflicting release indicators
 length(unique(DefendantsConcurrentConflicting))
 ```
 
-
-
-1156 defendants had a total of 2,948 concurrent cases pending against them. In case of a conflict in their release indicator (detained or released), we've updated their records for detained to take precedence over released. There are 301 defendants with concurrent pending cases who also had conflicting release indicators.
+1,156 defendants had a total of 2,948 concurrent cases pending against them. In case of a conflict in their release indicator (detained or released), we've updated their records for detained to take precedence over released. There are 301 defendants with concurrent pending cases who also had conflicting release indicators.
 
 ```{r updateConcConfRelease}
 # Update case-level records for concurrent cases with conflicting release indicator
@@ -506,7 +572,26 @@ for(c in 1:length(gunFelonyData$CRCASEN)){
 ```
 
 
-```{r CalcDentionLength}
+```{r CalculateCountofCharges}
+# Get all columns that contain CLAOIC codes
+ChargesCountCols <- grep("CLAOIC", names(gunFelonyData), value = TRUE)
+
+for(c in 1:length(gunFelonyData$CRCASEN)) {
+  
+  df = subset(gunFelonyData, CRCASEN == gunFelonyData$CRCASEN[c])
+  temp <- df[,ChargesCountCols]
+  naCount <- sum(is.na(temp))
+  
+  # Create a new variable with # of charge counts (calculated as length of CLAOIC cols - empty cells)
+  gunFelonyData$`Charge Count (AOICs)`[c] <- length(ChargesCountCols) - naCount
+  
+}
+
+
+```
+
+
+```{r CalcDetentionLength}
 # Calculate the length of detention 
 # Difference between Outcome / Sentence date and Arrest date for those detained. 
 # Difference between First Release date and Arrest date for those detained and released on (I-Bond and EM)
@@ -524,17 +609,54 @@ for(c in 1:length(gunFelonyData$CRCASEN)){
     gunFelonyData$Detention_Length[c] <- difftime(gunFelonyData$OutComeDt[c], gunFelonyData$CRARRDTE[c], 
                                                   units = c("days"))
     
+    # Convert days to months
+    gunFelonyData$Detention_Length[c] <- gunFelonyData$Detention_Length[c]/30.5
+    gunFelonyData$Detention_Length[c] <- round(gunFelonyData$Detention_Length[c], digits = 1)
+    
   } else if(gunFelonyData$CRCASEN[c] %in% gunFelonyDataR1$CRCASEN){
     
     gunFelonyData$Detention_Length[c] <- difftime(gunFelonyData$FirstRelDate[c], gunFelonyData$CRARRDTE[c],
                                                   units = c("days"))
     
+    # Convert days to months
+    gunFelonyData$Detention_Length[c] <- gunFelonyData$Detention_Length[c]/30.5
+    gunFelonyData$Detention_Length[c] <- round(gunFelonyData$Detention_Length[c], digits = 1)
+    
   }
   
 }
 
+
+colnames(gunFelonyData)[colnames(gunFelonyData) == "Detention_Length"] <- "Detention_Length (Months)"
+
+# Replace NA with 0
+gunFelonyData$`Detention_Length (Months)`[is.na(gunFelonyData$`Detention_Length (Months)`)] <- 0
+
 ```
 
+
+```{r CalcPreTrialLength}
+# Calculate the length of PreTrial 
+# Difference between Case Outcome date and Arrest date
+
+for(c in 1:length(gunFelonyData$CRCASEN)){
+    
+    gunFelonyData$Pretrial_Length[c] <- difftime(gunFelonyData$OutComeDt[c], gunFelonyData$CRARRDTE[c], 
+                                                  units = c("days"))
+    
+    gunFelonyData$Pretrial_Length[c] <- gunFelonyData$Pretrial_Length[c]/30.5
+    gunFelonyData$Pretrial_Length[c] <- round(gunFelonyData$Pretrial_Length[c], digits = 1)
+    
+} 
+
+colnames(gunFelonyData)[colnames(gunFelonyData) == "Pretrial_Length"] <- "Pretrial_Length (Months)"
+
+# Replace NA with 0
+gunFelonyData$`Pretrial_Length (Months)`[is.na(gunFelonyData$`Pretrial_Length (Months)`)] <- 0
+  
+```
+
+For those defendants detained for the entirety of the their pretrial period, the detention length and pretrial period should be the same or very close to eachother. 
 
 ```{r Sentences}
 # Sum total IDOC and CCDOC length
@@ -546,34 +668,74 @@ gunFelonyData$IDOC_Sent[is.na(gunFelonyData$IDOC_Sent)] <- 0
 
 gunFelonyData$Corrections_Total <- as.integer(gunFelonyData$IDOC_Sent + gunFelonyData$CCDOC_Sent2)
 gunFelonyData$Corrections_Total[is.na(gunFelonyData$Corrections_Total)] <- 0
+colnames(gunFelonyData)[colnames(gunFelonyData) == "Corrections_Total"] <- "Corrections_Total (Months)"
 
-gunFelonyData$SentCompletionDate <- AddMonths(as.Date(gunFelonyData$OutComeDt), gunFelonyData$Corrections_Total)
+
+gunFelonyData$SentCompletionDate <- AddMonths(as.Date(gunFelonyData$OutComeDt), 
+                                              gunFelonyData$`Corrections_Total (Months)`)
 
 pSent <- ggplot(gunFelonyData, aes(x=SentCompletionDate)) +
          geom_histogram(binwidth = 20) + 
          #geom_vline(xintercept = quantile, size = 2) +
          scale_x_date(breaks = date_breaks("2 years"),
-                      labels=date_format("%b-%y")) +
+                      labels=date_format("%b-%Y")) +
          xlab("Sentence Completion Dates") + 
+         theme_light() +
          theme(axis.text.x = element_text(angle = 85, size = 8, hjust = 1)) 
 pSent
 
 ```
+
 Based on the computed sentence completion dates, it appears that the high concentration of cases had the date between 2014 and 2019. 
+
+```{r sentCompletionDate1YearAnniversary}
+
+# Our post adjudication Re-Offense would be relative to individual's case completion and sentence completion date
+# Calculate 1 year sentence completion anniversary date (I know anniversary has a celebratory connotation to it, but according to dictionary definition, it is a annual recurrence of the date of a past event - http://www.dictionary.com/browse/anniversary?s=t)
+
+gunFelonyData$SentCompletionDate1YearAnniversary <- AddMonths(as.Date(gunFelonyData$SentCompletionDate),12)
+                                                                      
+```
+
+```{r AgeCalculation - juvenile - case initiation date}
+# Calculate whether the defendant is Juvenile or Adult by calculating age at the time of initial case date
+for(i in 1:nrow(gunFelonyData)) {
+  
+  gunFelonyData$`Defendant_Age (in years | Case initiation date)`[i] <- round(difftime(gunFelonyData$CRFRSTDT[i],
+                                                                              gunFelonyData$CRDOB[i], 
+                                                                              units = c("days"))/365, digits = 0)
+  
+}
+
+# Subset Juvenile defendants
+gunFelonyData <- subset(gunFelonyData, `Defendant_Age (in years | Case initiation date)` > 17)
+
+```
+
+
+```{r AgeCalculation - predictor variable - outcome date}
+# Calculate age at the time of sentence completion
+for(i in 1:nrow(gunFelonyData)) {
+  
+  gunFelonyData$`Defendant_Age (in years | Sentence comp date)`[i] <- round(difftime(gunFelonyData$SentCompletionDate[i],
+                                                                            gunFelonyData$CRDOB[i], 
+                                                                            units = c("days"))/365, digits = 0)
+  
+}
+
+```
 
 ```{r}
 # Rearrange gun felony data
-gunFelonyData <- subset(gunFelonyData, select = c(1:37,747:755,38:746))
+gunFelonyData <- subset(gunFelonyData, select = c(1:37,747:length(gunFelonyData),38:length(felonyData)))
 ```
 
 
 ### Merge CPD data for re-arrest target variable
 
-
 ```{r Import}
 #Change Working Directory
 # setwd("/export/projects/courtdata/CJO Pre-Trial Detention/data_raw/CPD_Arrests/")
-# 
 # 
 # # Read Crime data
 # ImportCSV <- function(files) {
@@ -632,7 +794,9 @@ gunFelonyDataNM <- subset(gunFelonyData,
                           !(gunFelonyData$CRCASEN %in% gunFelonyCourtArrests_M1$CRCASEN))
 
 # Further match on IR# and Arrest date 
-gunFelonyCourtArrests_M2 <- merge(x = gunFelonyDataNM, y = CPDArrestsData, by.x = c("CRIRNBR","CRARRDTE"), by.y = c("IR_NO","ARREST_DATE1"))
+gunFelonyCourtArrests_M2 <- merge(x = gunFelonyDataNM, y = CPDArrestsData, 
+                                  by.x = c("CRIRNBR","CRARRDTE"), 
+                                  by.y = c("IR_NO","ARREST_DATE1"))
 
 # Drop columns IR_NO and ARR_DT
 vars <- names(gunFelonyCourtArrests_M1) %in% c("IR_NO", "ARREST_DATE1")
@@ -645,13 +809,14 @@ gunFelonyCourtArrests_M2 <- gunFelonyCourtArrests_M2[!vars]
 # Append 
 gunFelonyCourtArrests <- rbind(gunFelonyCourtArrests_M1, gunFelonyCourtArrests_M2)
 
-gunFelonyCourtArrests <- subset(gunFelonyCourtArrests, select = c(1:55,756:872,56:755))
+#gunFelonyCourtArrests <- subset(gunFelonyCourtArrests, select = c(1:55,756:872,56:755))
   
 # Subset non-matches rows 
 gunFelonyDataNM1 <- subset(gunFelonyData, 
                           !(gunFelonyData$CRCASEN %in% gunFelonyCourtArrests$CRCASEN))
 
 ```
+
 
 ```{r}
 # Check if all IR#s in non matches belong to CPD Arrest data 
@@ -680,6 +845,13 @@ for(i in 1:length(gunFelonyDataIRNM1)) {
   
 ```
 
+
+```{r read - CPD gun violence identification file}
+CPDguncharges <- readLines("gun_charges_flag.txt")
+CPDguncharges
+
+```
+
 ### Construct Arrest histories and our target / outcome variable - Arrests post adjudication 
 
 ```{r ConstructArrestHistory}
@@ -699,7 +871,7 @@ for(d in 1:length(defendants1)) {
                                  "IUCR_CODE_CD")], 
                IR_NO == as.character(defendants1[d]))
   
-  print(paste0("Defendants", defendants1[d]))
+  #print(paste0("Defendants", defendants1[d]))
   
   mdictArrest[[ defendants1[d] ]] <- list(ArrestDate = df$ARREST_DATE1,
                                           Stat_Descr = df$STAT_DESCR,
@@ -717,17 +889,22 @@ for(d in 1:length(defendants1)) {
   df <- subset(gunFelonyData[,c("CRCASEN",
                                  "CRIRNBR",
                                  "CRFRSTDT",
-                                 "OutComeDt")],
+                                 "OutComeDt",
+                                 "SentCompletionDate",
+                                 "SentCompletionDate1YearAnniversary")],
                CRIRNBR == as.character(defendants1[d]))
   
   mdictCourt[[ defendants1[d] ]] <- list(CaseNo = df$CRCASEN,
                                          IR_NO = df$CRIRNBR,
                                          CaseDocketDate = df$CRFRSTDT,
-                                         CaseOutComeDate = df$OutComeDt)
+                                         CaseOutComeDate = df$OutComeDt,
+                                         SentCompletionDt = df$SentCompletionDate,
+                                         SentCompletionDate1YearAnniversary = df$SentCompletionDate1YearAnniversary)
   
 }
 
 ```
+
 
 ```{r ConstructArrestHistory1}
 # 1152515 - Multiple cases 
@@ -735,6 +912,7 @@ for(d in 1:length(defendants1)) {
 
 ArrestHistory <- numvecdict()
 ReOffense <- numvecdict()
+ReOffense1Year <- numvecdict()
 MidDates <- numvecdict()
 ArrestDates <- list()
 
@@ -753,11 +931,11 @@ for(d in 1:length(defendants1)) {
           #print(paste0("Arrest Loop", mdictArrest$get(defendants1[d])$ArrestDate[a]))
           
           ArrestDateInt <- as.Date(mdictArrest$get(defendants1[d])$ArrestDate[a])
-          OutComeDateInt <- as.Date(mdictCourt$get(defendants1[d])$CaseOutComeDate[d1])
+          SentCompletionDateInt <- as.Date(mdictCourt$get(defendants1[d])$SentCompletionDt[d1])
           DocketDateInt <- as.Date(mdictCourt$get(defendants1[d])$CaseDocketDate[d1])
           
           # Mid dates
-          if(between(ymd(ArrestDateInt), ymd(DocketDateInt), ymd(OutComeDateInt))) {
+          if(dplyr::between(ymd(ArrestDateInt), ymd(DocketDateInt), ymd(SentCompletionDateInt))) {
             
                #print(paste0("Mid Arrest block", mdictArrest$get(defendants1[d])$ArrestDate[a]))
             
@@ -768,7 +946,7 @@ for(d in 1:length(defendants1)) {
           
           # Check if Arrest date is prior to court date - (Arrest History)
           else if(mdictArrest$get(defendants1[d])$ArrestDate[a] < 
-             mdictCourt$get(defendants1[d])$CaseDocketDate[d1]) {
+                  mdictCourt$get(defendants1[d])$CaseDocketDate[d1]) {
                 
                #print(paste0("Arrest History block", mdictArrest$get(defendants1[d])$ArrestDate[a]))
                
@@ -777,12 +955,14 @@ for(d in 1:length(defendants1)) {
                
                ArrestHistory$append_number(mdictCourt$get(defendants1[d])$CaseNo[d1],
                                            as.Date(mdictArrest$get(defendants1[d])$ArrestDate[a]))
-        
+            
+                                           #as.character(mdictArrest$get(defendants1[d])$Stat_Descr[a]))
+          
           } 
                  
           # Check if Arrest date is post court date - (ReOffense)  
           else if(mdictArrest$get(defendants1[d])$ArrestDate[a] > 
-                  mdictCourt$get(defendants1[d])$CaseOutComeDate[d1]) {
+                  mdictCourt$get(defendants1[d])$SentCompletionDt[d1]) {
                   # --> Use Sentence Completion date for guilty vs not guilty 
             
                   #print(paste0("ReOffense block", mdictArrest$get(defendants1[d])$ArrestDate[a]))
@@ -792,8 +972,15 @@ for(d in 1:length(defendants1)) {
                
                   ReOffense$append_number(mdictCourt$get(defendants1[d])$CaseNo[d1],
                                           as.Date(mdictArrest$get(defendants1[d])$ArrestDate[a]))
-         
-          }
+            
+                  if(mdictArrest$get(defendants1[d])$ArrestDate[a] <
+                     mdictCourt$get(defendants1[d])$SentCompletionDate1YearAnniversary[d1]) {
+            
+                     ReOffense1Year$append_number(mdictCourt$get(defendants1[d])$CaseNo[d1],
+                                                  as.Date(mdictArrest$get(defendants1[d])$ArrestDate[a]))
+                    
+                  }
+         }
       
         }
       }  
@@ -804,6 +991,829 @@ for(d in 1:length(defendants1)) {
 ```
 
 
+```{r SubsetCols}
+CLAOICs <- grep("CLAOIC", names(gunFelonyData), value = TRUE)
+CLCHGDESs <- grep("CLCHGDES", names(gunFelonyData), value = TRUE)
+CLCHGSECs <- grep("CLCHGSEC", names(gunFelonyData), value = TRUE)
+
+CLAOICs <- CLAOICs[CLAOICs != "CLAOIC"]
+CLCHGDESs <- CLCHGDESs[CLCHGDESs != "CLCHGDES"]
+CLCHGSECs <- CLCHGSECs[CLCHGSECs != "CLCHGSEC"]
+
+ColsToDrop <- c(CLAOICs, CLCHGDESs, CLCHGSECs)
+
+gunFelonyCourtArrests <- gunFelonyCourtArrests[,!colnames(gunFelonyCourtArrests) %in% ColsToDrop]
+
+```
 
 
+```{r DFArrestHistoryAndReOffense}
+
+# Append Arrest History and Re-offense for each individual at the time of the case 
+gunFelonyCaseList <- unique(gunFelonyCourtArrests$CRCASEN)
+
+for(c in 1:length(gunFelonyCaseList)) {
+  
+ gunFelonyCourtArrests$ArrestHistory[c] <- length(ArrestHistory$get(gunFelonyCaseList[c]))  
+ gunFelonyCourtArrests$ReOffense[c] <- length(ReOffense$get(gunFelonyCaseList[c])) 
+ gunFelonyCourtArrests$ReOffense1Year[c] <- length(ReOffense1Year$get(gunFelonyCaseList[c]))
+ 
+}
+
+# Interesting example of multiple cases IR# 1981371 
+```
+
+
+```{r TargetVariableBinary}
+
+gunFelonyCourtArrests$ReOffenseBinary <- as.factor(ifelse(gunFelonyCourtArrests$ReOffense > 0, 1, 0))
+
+```
+
+```{r TargetVariable1YearBinary}
+
+gunFelonyCourtArrests$ReOffense1YearBinary <- as.factor(ifelse(gunFelonyCourtArrests$ReOffense1Year > 0, 1, 0))
+
+```
+
+```{r releaseIndicatorBinary}
+
+gunFelonyCourtArrests$ReleaseBinary <- as.factor(ifelse(gunFelonyCourtArrests$Release == 0, 0, 1))
+
+```
+
+```{r ArrestHistoryBinary}
+
+gunFelonyCourtArrests$ArrestHistoryBinary <- as.factor(ifelse(gunFelonyCourtArrests$ArrestHistory > 0, 1, 0))
+
+```
+
+```{r ChargeClass - Factor}
+
+gunFelonyCourtArrests$ChargeClass <- as.factor(gunFelonyCourtArrests$ChargeClass)
+
+```
+
+```{r OutcomeRed - Factor}
+
+gunFelonyCourtArrests$OutComeRed <- as.factor(gunFelonyCourtArrests$OutComeRed)
+
+```
+
+```{r outcomeYear}
+# Outcome Year 
+gunFelonyCourtArrests$OutComeYear <- year(gunFelonyCourtArrests$OutComeDt) 
+
+# Re-arrange columns in dataframe
+#gunFelonyCourtArrests <- subset(gunFelonyCourtArrests, 
+#                                select = c(1:49,746:length(gunFelonyCourtArrests),50:745))
+
+```
+
+```{r splitContinuousVarAge}
+
+gunFelonyCourtArrests$Age_Group <- cut(gunFelonyCourtArrests$`Defendant_Age (in years | Sentence comp date)`,
+                                       breaks = c(17,25,35,45,153),
+                                       labels = c("17-25","26-35","36-45","46+"))
+
+```
+
+
+```{r flagDefendants - still serving sentence}
+
+for(c in 1:length(gunFelonyCourtArrests$CRCASEN)) {
+  
+  if(gunFelonyCourtArrests$SentCompletionDate[c] > max(CPDArrestsData$ARREST_DATE1)) {
+    
+    gunFelonyCourtArrests$`Incarcerated (as of max CPD Arrest date[2017-12-31])`[c] <- 1
+    
+  } else {
+    
+    gunFelonyCourtArrests$`Incarcerated (as of max CPD Arrest date[2017-12-31])`[c] <- 0
+    
+  }
+  
+}
+
+```
+
+
+```{r subset-dataset-to-include-freed-defendants}
+# We subset dataframe to include only those defendants that have been released
+
+gunFelonyCourtArrestsFreedDef <- subset(gunFelonyCourtArrests, 
+                                        `Incarcerated (as of max CPD Arrest date[2017-12-31])` == 0)
+
+
+# Save RDS copy
+saveRDS(gunFelonyCourtArrestsFreedDef, file = "gunFelonyCourtArrestsFreedDef.rds")
+
+```
+
+### Let's make some scatter plots to explore the relationship between our reoffense target variable and independent variables 
+
+```{r scatterPlotFunc}
+
+makeScatterplots <- function(dataframe, x.var, y.var, xlabel, ylabel, text) {
+  
+  p = ggplot(dataframe, aes(x=x.var, y=y.var)) +
+      geom_point() +
+      ylab(ylabel) + 
+      xlab(xlabel) +
+      ggtitle(text)  
+  
+  return(p)
+  
+}
+
+```
+
+
+```{r scatterArrestHistoryAndReoffense - Exploring Arrest History as continuous variable}
+# Limit dataset to cases where defendants have had at least a year of freedom
+
+makeScatterplots(gunFelonyCourtArrestsFreedDef, 
+                 gunFelonyCourtArrestsFreedDef$ArrestHistory, 
+                 gunFelonyCourtArrestsFreedDef$ReOffense1Year, 
+                 "Arrest History", 
+                 "Offense count (within 1 year of Adjudication)",
+                 "Plot of defendants likely to offend")
+
+```
+
+We limit the plot here to defendants and convicts who have had at least 1 year of freedom and are likely to reoffend. This is to eliminate some of the biases as individuals have a similar window / time interval to reoffend from. 
+
+```{r scatterCorrectionsTotal - Exploring Arrest History as continuous variable}
+
+makeScatterplots(gunFelonyCourtArrests, 
+                 gunFelonyCourtArrests$ArrestHistory, 
+                 gunFelonyCourtArrests$`Corrections_Total (Months)`/12, 
+                 "Arrest History", 
+                 "Sentence Length (Years)",
+                 "Comparison of Arrest history and sentence length")
+
+```
+
+While sentence length is related to Arrest history, sentence length is likely more related to the severity/intensity of the crime. That probably explains, why we see very lengthy sentence length for convicts with low arrest histories. 
+
+
+```{r collapseRaceVariable}
+
+gunFelonyCourtArrestsFreedDef$RaceRecoded <- mapvalues(gunFelonyCourtArrestsFreedDef$CRRACE, 
+                                               from = c('A','I','L','M','O','S','X','','B','W'),
+                                               to = c('other','other','other','other','other','other',
+                                                      'other','other','African American','White'))
+                                               
+
+gunFelonyCourtArrestsFreedDef$RaceRecoded[is.na(gunFelonyCourtArrestsFreedDef$RaceRecoded)] <- 'Other'
+gunFelonyCourtArrestsFreedDef$RaceRecoded <- as.factor(gunFelonyCourtArrestsFreedDef$RaceRecoded)
+
+```
+
+
+```{r ArrestHistoryRace}
+
+ggplot(gunFelonyCourtArrestsFreedDef, aes(factor(RaceRecoded),ArrestHistory)) +
+      geom_boxplot() +
+      xlab("Race") +
+      ylab("Arrest History Count") + 
+      theme(axis.text.x = element_text(angle = 20, size = 8, hjust = 1)) 
+
+```
+
+
+```{r ReoffenseRace - Calculate the % of Reoffense by race}
+# Calculate the % of Reoffense by race variable 
+CrossTable(gunFelonyCourtArrestsFreedDef$RaceRecoded, gunFelonyCourtArrestsFreedDef$ReOffense1YearBinary)
+
+```
+
+
+```{r ReoffenseSex} 
+# Filter missing sex values
+gunFelonyCourtArrestsFreedDef$CRSEX <- as.factor(gunFelonyCourtArrestsFreedDef$CRSEX)
+gunFelonyCourtArrestsFreedDef <- subset(gunFelonyCourtArrestsFreedDef, CRSEX != "")
+
+CrossTable(gunFelonyCourtArrestsFreedDef$CRSEX, gunFelonyCourtArrestsFreedDef$ReOffense1YearBinary)
+```
+
+
+```{r histRelease}
+# Here we limit our dataset of those defendants that have had at least 1 year of freedom to get a sense of reoffense
+
+p <-  ggplot(gunFelonyCourtArrestsFreedDef, aes(x=Release, y=ReOffense)) +
+      stat_summary(fun.y = "sum", geom = "bar") +
+      theme_light() + 
+      xlab("Release Indicator") +
+      ylab("Re-offense Count") + 
+      scale_x_discrete(labels = c("0" = "Detained",
+                                  "1" = "Released (I-bond)",
+                                  "2" = "Released (C/D-bond)"))
+      
+p
+  
+```
+
+
+
+```{r histReleaseYear}
+
+p4 <- ggplot(gunFelonyCourtArrests, aes(factor(year(gunFelonyCourtArrests$CRFRSTDT)), 
+                                fill = factor(gunFelonyCourtArrests$Release))) +
+      geom_bar(stat = "count", position = "fill") +
+      xlab("Case Initiation Year") +
+      ylab("Percent") +
+      ggtitle("Percentage Distribution of Release Type by Year") + 
+      scale_y_continuous(labels = percent_format()) +
+      scale_fill_brewer(palette = "Paired",
+                        direction = -1,
+                        name = "Type",
+                        breaks = c("0","1","2"),
+                        labels = c("Detained","Released (I-bond)","Released (C/D-bond)")) 
+p4 
+
+```
+
+
+```{r histGunCasesCount}
+
+pSentBar <- ggplot(gunFelonyCourtArrests, aes(factor(year(gunFelonyCourtArrests$OutComeDt)))) +
+                   geom_bar() +
+                   xlab("Year") +
+                   ylab("Count") +
+                   ggtitle("Gun Felony Cases Disposed by Year") 
+pSentBar
+
+```
+
+
+```{r histSentenceLength}
+
+pSentLength <- ggplot(gunFelonyCourtArrests, 
+                      aes(x=factor(year(gunFelonyCourtArrests$OutComeDt)),
+                      y=gunFelonyCourtArrests$Corrections_Total/30.5)) +
+                      stat_summary(fun.y = "mean", geom = "bar") +
+                      xlab("Year") +
+                      ylab("Avg. sent length (in months)") +
+                      ggtitle("Average Gun Felony Sentence Length by case disposition year") + 
+                      scale_fill_discrete(name = "Year") +
+                      scale_color_brewer() 
+pSentLength
+
+```
+
+```{r meanSentenceLength - by gun felony charge}
+#Reorder Charge Class factor by mean of sentence length
+
+pSentLengthCharge <- ggplot(gunFelonyCourtArrests, 
+                            aes(x=factor(gunFelonyCourtArrests$CLCHRCLS),
+                            y=gunFelonyCourtArrests$`Corrections_Total (Months)`)) +
+                            stat_summary(fun.y = "mean", geom = "bar") +
+                            xlab("Felony Charge Class") +
+                            ylab("Avg. sentence length (IDOC + CCDOC in months)") +
+                            ggtitle("Average sentence length by felony class") + 
+                            scale_fill_discrete(name = "Felony Charge Class") +
+                            scale_color_brewer() 
+pSentLengthCharge
+
+```
+
+Let's plot our dependent variable offense post adjudication
+
+```{r TargetVar}
+
+ggplot(data = gunFelonyCourtArrests, 
+       aes(gunFelonyCourtArrests$ReOffense)) +
+       geom_histogram(col = "black",
+                      fill = "black",
+                      alpha = .2) +
+       theme_light() +
+       xlab("Re-offense") 
+
+```
+
+Exploring Future offense as Binary outcome variable 
+
+```{r arrestHistoryReOffenseBinary}
+
+ggplot(gunFelonyCourtArrestsFreedDef, aes(factor(ReOffense1YearBinary), ArrestHistory)) +
+      geom_boxplot() +
+      xlab("Reoffense (within 1 year)") +
+      ylab("Arrest History") +
+      scale_x_discrete(labels = c("1" = "Yes",
+                                  "0" = "No"))
+
+```
+
+
+```{r defendantAgeReOffenseBinary}
+
+ggplot(gunFelonyCourtArrestsFreedDef, aes(factor(ReOffense1YearBinary), 
+                                          `Defendant_Age (in years | Case initiation date)`)) +
+      geom_boxplot() +
+      xlab("ReOffense") +
+      ylab("Defendant Age (At the time of Case initiation)") +
+      ylim(0,65) +
+      scale_x_discrete(labels = c("1" = "Yes",
+                                  "0" = "No"))
+
+```
+
+
+```{r ArrestHistoryReleaseBinary}
+
+ggplot(gunFelonyCourtArrestsFreedDef, aes(factor(ReleaseBinary), ArrestHistory)) +
+      geom_boxplot() +
+      xlab("Release Indicator") +
+      ylab("Arrest History") +
+      scale_x_discrete(labels = c("0" = "Detained",
+                                  "1" = "Released"))
+
+```
+```{r SentenceLengthReleaseBinary - All CPD Merge data}
+
+sentRel1 <-  ggplot(gunFelonyCourtArrests, aes(factor(ReleaseBinary), `Corrections_Total (Months)`/12,
+                                              fill=ReleaseBinary)) +
+             geom_boxplot() +
+             xlab("Release Indicator") +
+             ylab("Sentence Length (in years)") +
+             ylim(0,10) +
+             scale_x_discrete(labels = c("0" = "Detained", "1" = "Released")) +
+             scale_fill_brewer(palette = "Set1") + 
+             guides(fill=FALSE) +
+             theme_light()
+sentRel1
+
+ggsave(filename = "SentReleaseGunFelonyCourtArrests.png", plot = sentRel1)
+```
+
+```{r SentenceLengthReleaseBinary}
+
+sentRel <-  ggplot(gunFelonyCourtArrestsFreedDef, aes(factor(ReleaseBinary), `Corrections_Total (Months)`/12,
+                                                      fill=ReleaseBinary)) +
+            geom_boxplot() +
+            xlab("Release Indicator") +
+            ylab("Sentence Length (in months)") +
+            ylim(0,10) +
+            scale_x_discrete(labels = c("0" = "Detained", "1" = "Released")) +
+            scale_fill_brewer(palette = "Set1") + 
+            guides(fill=FALSE) +
+            theme_light()
+sentRel
+
+ggsave(filename = "SentRelease.png", plot = sentRel)
+```
+
+
+```{r plot - sentence completion date - frequency with time}
+cols <- c("1" = "red", "0" = "blue")
+
+sentInc <- ggplot(gunFelonyCourtArrests) +
+           geom_histogram(aes(SentCompletionDate, 
+                          fill = factor(gunFelonyCourtArrests$`Incarcerated (as of max CPD Arrest date[2017-12-31])`)),
+                          binwidth = 20) + 
+           #geom_vline(xintercept = quantile, size = 2) +
+           scale_x_date(breaks = date_breaks("6 years"),
+                        labels=date_format("%b-%Y")) +
+           xlab("Sentence Completion Dates") + 
+           ylab("Frequency of Cases") +
+           scale_fill_discrete(name = "Incarcerated \n as of 2017-12-31", labels = c("No","Yes")) + 
+           annotate("rect", xmin = as.Date("2012-01-03"), xmax = as.Date("2017-12-31"), ymin = 0, ymax = 150, 
+                    color = "blue", alpha = .2) +
+           annotate("text", x = as.Date("2024-01-01"), y = 140, label = "Final sample for Analysis") + 
+           scale_colour_manual(values = cols) +
+           theme(legend.position = c(0.9,0.5)) +
+           theme(axis.text.x = element_text(angle = 85, size = 8, hjust = 1)) 
+sentInc
+
+ggsave(filename = "SentplotFinalSample.png", sentInc)
+```
+
+
+```{r YearQuarter-for-FixedEffects}
+# Parse year-quarter of outcome date to account for fixed effects during the quarter
+gunFelonyCourtArrestsFreedDef$OutComeYearQuarter <- as.yearqtr(gunFelonyCourtArrestsFreedDef$OutComeDt)
+
+```
+
+
+```{r TargetVar-ReOffense1Year}
+gunFelonyCourtArrestsFreedDef$ReOffense1Year <- as.numeric(gunFelonyCourtArrestsFreedDef$ReOffense1Year)
+
+pReOff <- ggplot(data = gunFelonyCourtArrestsFreedDef, 
+          aes(gunFelonyCourtArrestsFreedDef$ReOffense1Year)) +
+          geom_histogram(col = "black",
+                         fill = "black") +#,
+                         #alpha = .2) +
+          theme_light() +
+          xlab("Reoffense within 1 year") +
+          labs(title = "Reoffense count within 1 year interval window from court freedom date")
+pReOff
+
+```
+
+
+### Let's build some models, starting with a stepwise OLS regression
+
+```{r modelOLSlm}
+# Select a subset of predictors that an objective criteria, such as R-Squared or AIC 
+
+modelOLSlm <- lm(ReOffense1Year       ~ Age_Group + 
+                                        RaceRecoded + 
+                                        CRSEX + 
+                                        ArrestHistoryBinary + 
+                                        #CLCHRCLS + 
+                                        ReleaseBinary + 
+                                        `Pretrial_Length (Months)`+
+                                        `Charge Count (AOICs)`+
+                                        `Corrections_Total (Months)` +
+                                        factor(OutComeYear),
+             
+                                        data = gunFelonyCourtArrestsFreedDef)
+
+k <- ols_best_subset(modelOLSlm)
+ols_best_subset(modelOLSlm)
+
+```
+
+The best parsimonious model appears to be model #8 based on R-Squared criteria. The following variables are included in the model: 
+
+Defendant_Age 
+RaceRecoded 
+CRSEX 
+CLCHRCLS 
+ReleaseBinary 
+`Pretrial_Length (Months)` 
+`Corrections_Total (Months)` 
+factor(OutComeYearQuarter)  
+
+```{r plotBestSubset}
+plot(k)
+```
+
+
+
+
+```{r plotBetas}
+dwplot(modelOLSlm)
+
+```
+
+
+Stepwise Forward Regression 
+
+```{r stepForwardRegression}
+# Given the small effect size, we notice/expect to see in our model, we'll manually set our significance level/cutoff 
+
+ols_step_forward(modelOLSlm, penter = 0.10, details = TRUE)
+
+```
+
+Residual Diagnostics 
+
+```{r residualDiag}
+ols_rsd_hist(modelOLSlm)
+
+```
+
+```{r residualDiag1}
+ols_rsd_plot(modelOLSlm)
+
+```
+
+```{r outlier-detection}
+ols_cooksd_chart(modelOLSlm)
+
+```
+
+```{r Crosstab - Reoffense and Release indicator}
+
+CrossTable(gunFelonyCourtArrestsFreedDef$ReOffense1YearBinary, gunFelonyCourtArrestsFreedDef$ReleaseBinary)
+
+```
+
+
+Human stepwise Logit regression 
+
+Odds of success are calculated as: P(Success)/P(Failure)
+
+```{r convLogittoProbs}
+# Source: https://sebastiansauer.github.io/convert_logit2prob/
+
+logit2prob <- function(logit){
+  
+  odds <- exp(logit)
+  prob <- odds / (1+odds)
+  return(prob)
+  
+}
+
+```
+
+
+```{r humanStepwiseLogit1}
+
+stepwiseLogit1 <- glm(ReOffense1YearBinary ~ ReleaseBinary,
+                     
+                      data = gunFelonyCourtArrestsFreedDef, family = binomial(link = "log"))
+
+summary(stepwiseLogit1)
+
+```
+
+In this model, the release indicator has a negative effect on reoffense. This is likely due to the absence of other predictors in the model. The release0 - defendant was detained has a lesser negative effect on future offense compared 
+to release1 - defendant was released. 
+
+```{r stepwiseLogit1 - CalculateOddsRatio}
+
+cbind(exp(coef(stepwiseLogit1)), confint.default(stepwiseLogit1, level = 0.95))
+
+```
+
+```{r stepwiseLogit1 - convert_to_prob}
+
+logit2prob(coef(stepwiseLogit1))
+
+```
+
+Based on the above calculated probabilites, there is ~5% greater chance of future offense within a year of release if the individual was detained pretrial. 
+
+```{r humanStepwiseLogit2}
+
+stepwiseLogit2 <- glm(ReOffense1YearBinary ~  Age_Group +
+                                              ReleaseBinary,
+                     
+                     data = gunFelonyCourtArrestsFreedDef, family = binomial(link = "log"))
+
+summary(stepwiseLogit2)
+
+```
+
+```{r stepwiseLogit2 - CalculateOddsRatio}
+
+cbind(exp(coef(stepwiseLogit2)), confint.default(stepwiseLogit2, level = 0.95))
+
+```
+
+```{r stepwiseLogit2 - convert_to_prob}
+
+logit2prob(coef(stepwiseLogit2))
+
+```
+
+Here, the intercept is the mean of reference categorical variables Age_Group 17-25 who were detained pretrial. There is a 28% chance of reoffending for defendants aged between 17-25 who were detained 
+
+```{r stepwiseLogit2 - plotEffects}
+
+plot(allEffects(stepwiseLogit2))
+
+```
+
+On the y-axis, we have the predicted probabilities of offending within 1 year of Adjudication. Defendants aged 17-25 and detained pretrial are most likely to reoffend in future. 
+
+
+```{r humanStepwiseLogit3}
+
+stepwiseLogit3 <- glm(ReOffense1YearBinary  ~ Age_Group + 
+                                              RaceRecoded + 
+                                              CRSEX + 
+                                              ReleaseBinary,
+             
+                                              data = gunFelonyCourtArrestsFreedDef, family = binomial(link = "log"))
+
+summary(stepwiseLogit3)
+
+```
+
+
+```{r stepwiseLogit3 - CalculateOddsRatio}
+
+cbind(exp(coef(stepwiseLogit3)), confint.default(stepwiseLogit3, level = 0.95))
+
+```
+
+```{r stepwiseLogit3 - convert_to_prob}
+
+logit2prob(coef(stepwiseLogit3))
+
+```
+
+Here, the intercept is the mean likelihood of offending post adjudication for African American defendants aged 17-25 who were detained pretrial. 
+
+```{r stepwiseLogit3 - plotEffects}
+
+plot(allEffects(stepwiseLogit3))
+
+```
+
+```{r humanStepwiseLogit4}
+
+stepwiseLogit4 <- glm(ReOffense1YearBinary  ~ Age_Group + 
+                                              RaceRecoded + 
+                                              CRSEX + 
+                                              relevel(ReleaseBinary, ref = "1") +
+                                              ArrestHistoryBinary +
+                                              #factor(CLCHRCLS) +
+                                              `Pretrial_Length (Months)` +
+                                              `Charge Count (AOICs)` +
+                                              `Corrections_Total (Months)` +
+                                              #factor(OutComeRed) +
+                                              factor(OutComeYear),
+             
+                      data = gunFelonyCourtArrestsFreedDef, family = binomial(link = "log"))
+
+summary(stepwiseLogit4)
+
+```
+
+```{r stepwiseLogit4 - CalculateOddsRatio}
+
+cbind(exp(coef(stepwiseLogit4)), confint.default(stepwiseLogit4, level = 0.95))
+
+```
+
+```{r stepwiseLogit4 - convert_to_prob}
+
+logit2prob(coef(stepwiseLogit4))
+
+```
+
+
+```{r table}
+htmlreg(list(stepwiseLogit1, stepwiseLogit2, stepwiseLogit3, stepwiseLogit4),
+        file = "Logit_model_results.html")
+
+```
+
+```{r}
+getwd()
+```
+
+Key findings: 
+
+Defendants who were detained pretrial have a higher likelihood of offending post adjudication compared to defendants who were released during the pretrial period. 
+
+Defendants with prior arrest histories are more likely to reoffend post adjudication. 
+
+The effect of length of sentence on post adjudication offense is negative. Longer the length of the sentence, less likely the individuals are to offend post adjudication. 
+
+The effect of age also appears to be negative on post adjudication offense. Older the defendant is at the time of outcome, less likely are the individuals to offend post adjudication. 
+
+
+Note: AIC criteria of different classes of model cannot be compared as AIC logit model requires that log-likelihood function has been maximized whereas maximum likelihood does not. 
+
+```{r effect of concurrent cases with conflicting release indicators}
+# Create a variable for concurrent cases with conflicting release indicators 
+
+for(i in 1:length(gunFelonyCourtArrestsFreedDef$CRCASEN)) {
+  
+  if(gunFelonyCourtArrestsFreedDef$CRIRNBR[i] %in% DefendantsConcurrentConflicting) {
+    
+    gunFelonyCourtArrestsFreedDef$ConcConf[i] <- 1
+    
+  } else {
+    
+    gunFelonyCourtArrestsFreedDef$ConcConf[i] <- 0
+    
+  }
+  
+}
+
+```
+
+
+```{r test model without the concurrent cases}
+gunFelonyCourtArrestsFreedDefNoConcConf <- subset(gunFelonyCourtArrestsFreedDef, ConcConf == 0)
+
+stepwiseLogit5 <- glm(ReOffense1YearBinary  ~ Age_Group + 
+                                              RaceRecoded + 
+                                              CRSEX + 
+                                              relevel(ReleaseBinary, ref = "1") +
+                                              ArrestHistoryBinary +
+                                              #CLCHRCLS +
+                                              `Pretrial_Length (Months)` +
+                                              `Charge Count (AOICs)` +
+                                              `Corrections_Total (Months)` +
+                                              #OutComeRed +
+                                              factor(OutComeYear),
+             
+                      data = gunFelonyCourtArrestsFreedDefNoConcConf, family = binomial(link = "log"))
+
+summary(stepwiseLogit5)
+
+
+```
+
+```{r table1}
+
+htmlreg(list(stepwiseLogit4, stepwiseLogit5), file = "Logit_model_results_conc.html", 
+        custom.model.names = c("With Concurrent \n Cases","w/o Concurrent \n Cases"))
+
+```
+
+```{r to-word}
+
+resultsTable <- xtable( summary(stepwiseLogit4) )
+print.xtable(resultsTable, type = "html", file = "Logit_model_results_table_v1.html")
+
+```
+
+
+```{r Import - Crimes}
+#Change Working Directory
+setwd("/export/projects/courtdata/CJO Pre-Trial Detention/data_raw/CPD_Crimes")
+ 
+# Read Crime data
+ImportCSV <- function(files) {
+ 
+   # Create a null dataframe
+   myData <- data.frame(NULL)
+ 
+   # Loop through each files in the list
+   for (i in 1:length(files)) {
+     cur.file <- read.csv(file = files[i], sep = ",", stringsAsFactors = FALSE)
+     print(files[i])
+     # Append data from current file to dataframe
+     myData <- rbind(myData, cur.file)
+   }
+ 
+   return(myData)
+ 
+}
+ 
+# # Grab all the csv files in the folder
+files <- list.files(path = "/export/projects/courtdata/CJO Pre-Trial Detention/data_raw/CPD_Crimes/",
+                     pattern = "*.csv")
+ 
+CPDCrimesData <- ImportCSV(files)
+
+```
+
+```{r subset columns}
+
+CPDCrimesDatav1 <- subset(CPDCrimesData, select = c("RD","CURR_IUCR"))
+
+```
+
+```{r join-to-ArrestData}
+
+gunFelonyCourtArrestsFreedDef_v1 <- merge(x = gunFelonyCourtArrestsFreedDef, 
+                                          y = CPDCrimesDatav1,
+                                          all.x = TRUE,
+                                          by.x = "RD_NO",
+                                          by.y = "RD")
+
+```
+
+```{r read-IUCR-codes}
+setwd("/export/projects/courtdata/CJO Pre-Trial Detention/data_raw/")
+
+IUCR_Table <- read.csv("CPD_IUCR_Codes.csv")
+
+```
+
+```{r Lookup - IUCR}
+
+gunFelonyCourtArrestsFreedDef_v2 <- merge(x = gunFelonyCourtArrestsFreedDef_v1, 
+                                          y = IUCR_Table,
+                                          all.x = TRUE,
+                                          by.x = "CURR_IUCR",
+                                          by.y = "IUCR")
+
+
+```
+
+
+```{r categorization}
+#03/23 Arrest History information:  
+#Count of Prior Arrests -   
+#Violent gun charge- Primary is in (Homicide, Criminal Sexual Assault, Robbery, Battery, Assualt)  and Secondary contains (Firearm, Handgun)
+#Non Violent Arrests - 
+#Gun Charges NV- Primary contains Weapons Violation
+#Non gun Charges - 
+
+Violent_GunCharges <- c('HOMICIDE','CRIM SEXUAL ASSAULT','ROBBERY','BATTERY','ASSAULT')
+NonViolent_GunCharges <- c('WEAPONS VIOLATION')
+
+
+for(i in 1:length(gunFelonyCourtArrestsFreedDef_v2$CRCASEN)){
+  
+  if(gunFelonyCourtArrestsFreedDef_v2$PRIMARY.DESCRIPTION[i] %in% Violent_GunCharges) {
+    
+    gunFelonyCourtArrestsFreedDef_v2$GunCharge[i] <- 'Violent'
+    
+  } else if(gunFelonyCourtArrestsFreedDef_v2$PRIMARY.DESCRIPTION[i] %in% NonViolent_GunCharges) {
+    
+    gunFelonyCourtArrestsFreedDef_v2$GunCharge[i] <- 'Non Violent'
+    
+  } else {
+    
+    gunFelonyCourtArrestsFreedDef_v2$GunCharge[i] <- 'Unknown'
+    
+  }
+  
+}
+
+
+```
 
